@@ -18,7 +18,5 @@ pub enum Error {
     VaultPaused             = 11,
     ZeroAddress             = 12,
     ZeroAmount              = 13,
-    /// A guarded function was called while it (or another guarded function)
-    /// was already executing — reentrancy is not permitted.
-    Reentrant               = 14,
+    AddressBlacklisted      = 14,
 }

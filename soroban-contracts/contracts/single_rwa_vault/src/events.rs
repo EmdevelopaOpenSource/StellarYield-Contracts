@@ -96,3 +96,10 @@ pub fn emit_burn(e: &Env, from: Address, amount: i128) {
         amount,
     );
 }
+
+pub fn emit_address_blacklisted(e: &Env, address: Address, status: bool) {
+    e.events().publish(
+        (symbol_short!("blklist"), address),
+        status,
+    );
+}
