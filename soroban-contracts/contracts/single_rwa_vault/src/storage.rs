@@ -66,6 +66,7 @@ pub enum DataKey {
     // --- Vault state ---
     VaultState,
     Paused,
+    ActivationTimestamp,
 
     // --- Epoch / yield ---
     CurrentEpoch,
@@ -91,6 +92,9 @@ pub enum DataKey {
     // --- Early redemption ---
     RedemptionCounter,
     RedemptionRequest(u32),
+
+    // --- Blacklist ---
+    Blacklisted(Address),
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -183,6 +187,18 @@ instance_get!(get_vault_state, VaultState, VaultState);
 instance_put!(put_vault_state, VaultState, VaultState);
 instance_get!(get_paused, Paused, bool);
 instance_put!(put_paused, Paused, bool);
+
+pub fn get_activation_timestamp(e: &Env) -> u64 {
+    e.storage()
+        .instance()
+        .get(&DataKey::ActivationTimestamp)
+        .unwrap_or(0)
+}
+pub fn put_activation_timestamp(e: &Env, val: u64) {
+    e.storage()
+        .instance()
+        .set(&DataKey::ActivationTimestamp, &val);
+}
 
 // Epoch / yield (global)
 instance_get!(get_current_epoch,           CurrentEpoch,           u32);
@@ -384,6 +400,30 @@ pub fn put_redemption_request(e: &Env, id: u32, req: RedemptionRequest) {
         .persistent()
         .extend_ttl(
             &DataKey::RedemptionRequest(id),
+            BALANCE_LIFETIME_THRESHOLD,
+            BALANCE_BUMP_AMOUNT,
+        );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Blacklist (persistent)
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub fn get_blacklisted(e: &Env, addr: &Address) -> bool {
+    e.storage()
+        .persistent()
+        .get(&DataKey::Blacklisted(addr.clone()))
+        .unwrap_or(false)
+}
+
+pub fn put_blacklisted(e: &Env, addr: &Address, status: bool) {
+    e.storage()
+        .persistent()
+        .set(&DataKey::Blacklisted(addr.clone()), &status);
+    e.storage()
+        .persistent()
+        .extend_ttl(
+            &DataKey::Blacklisted(addr.clone()),
             BALANCE_LIFETIME_THRESHOLD,
             BALANCE_BUMP_AMOUNT,
         );

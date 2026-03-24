@@ -148,6 +148,8 @@ impl SingleRWAVault {
     pub fn deposit(e: &Env, caller: Address, assets: i128, receiver: Address) -> i128 {
         caller.require_auth();
         require_not_paused(e);
+        require_not_blacklisted(e, &caller);
+        require_not_blacklisted(e, &receiver);
         require_kyc_verified(e, &caller);
         require_active_or_funding(e);
 
@@ -166,7 +168,6 @@ impl SingleRWAVault {
         update_user_snapshot(e, &receiver);
         put_user_deposited(e, &receiver, get_user_deposited(e, &receiver) + assets);
 
-        // Shares = assets (1:1 at start; yield accrual changes the price)
         let shares = preview_deposit(e, assets);
         transfer_asset_to_vault(e, &caller, assets);
         _mint(e, &receiver, shares);
@@ -180,6 +181,8 @@ impl SingleRWAVault {
     pub fn mint(e: &Env, caller: Address, shares: i128, receiver: Address) -> i128 {
         caller.require_auth();
         require_not_paused(e);
+        require_not_blacklisted(e, &caller);
+        require_not_blacklisted(e, &receiver);
         require_kyc_verified(e, &caller);
         require_active_or_funding(e);
 
@@ -211,6 +214,9 @@ impl SingleRWAVault {
     pub fn withdraw(e: &Env, caller: Address, assets: i128, receiver: Address, owner: Address) -> i128 {
         caller.require_auth();
         require_not_paused(e);
+        require_not_blacklisted(e, &caller);
+        require_not_blacklisted(e, &owner);
+        require_not_blacklisted(e, &receiver);
 
         if caller != owner {
             let allowance = get_share_allowance(e, &owner, &caller);
@@ -235,6 +241,9 @@ impl SingleRWAVault {
     pub fn redeem(e: &Env, caller: Address, shares: i128, receiver: Address, owner: Address) -> i128 {
         caller.require_auth();
         require_not_paused(e);
+        require_not_blacklisted(e, &caller);
+        require_not_blacklisted(e, &owner);
+        require_not_blacklisted(e, &receiver);
 
         if caller != owner {
             let allowance = get_share_allowance(e, &owner, &caller);
@@ -301,6 +310,7 @@ impl SingleRWAVault {
     pub fn claim_yield(e: &Env, caller: Address) -> i128 {
         caller.require_auth();
         require_not_paused(e);
+        require_not_blacklisted(e, &caller);
 
         let amount = Self::pending_yield(e, caller.clone());
         if amount <= 0 {
@@ -332,6 +342,7 @@ impl SingleRWAVault {
     pub fn claim_yield_for_epoch(e: &Env, caller: Address, epoch: u32) -> i128 {
         caller.require_auth();
         require_not_paused(e);
+        require_not_blacklisted(e, &caller);
 
         if get_has_claimed_epoch(e, &caller, epoch) {
             panic_with_error!(e, Error::NoYieldToClaim);
@@ -399,6 +410,7 @@ impl SingleRWAVault {
             panic_with_error!(e, Error::FundingTargetNotMet);
         }
         put_vault_state(e, VaultState::Active);
+        put_activation_timestamp(e, e.ledger().timestamp());
         emit_vault_state_changed(e, VaultState::Funding, VaultState::Active);
         bump_instance(e);
     }
@@ -469,6 +481,9 @@ impl SingleRWAVault {
     ) -> i128 {
         caller.require_auth();
         require_not_paused(e);
+        require_not_blacklisted(e, &caller);
+        require_not_blacklisted(e, &owner);
+        require_not_blacklisted(e, &receiver);
         require_state(e, VaultState::Matured);
 
         if caller != owner {
@@ -512,6 +527,7 @@ impl SingleRWAVault {
     pub fn request_early_redemption(e: &Env, caller: Address, shares: i128) -> u32 {
         caller.require_auth();
         require_not_paused(e);
+        require_not_blacklisted(e, &caller);
 
         if shares <= 0 {
             panic_with_error!(e, Error::ZeroAmount);
@@ -602,6 +618,22 @@ impl SingleRWAVault {
     }
 
     // ─────────────────────────────────────────────────────────────────
+    // Blacklist
+    // ─────────────────────────────────────────────────────────────────
+
+    pub fn set_blacklisted(e: &Env, caller: Address, address: Address, status: bool) {
+        caller.require_auth();
+        require_admin(e, &caller);
+        put_blacklisted(e, &address, status);
+        emit_address_blacklisted(e, address, status);
+        bump_instance(e);
+    }
+
+    pub fn is_blacklisted(e: &Env, address: Address) -> bool {
+        get_blacklisted(e, &address)
+    }
+
+    // ─────────────────────────────────────────────────────────────────
     // Emergency
     // ─────────────────────────────────────────────────────────────────
 
@@ -642,13 +674,37 @@ impl SingleRWAVault {
     pub fn asset(e: &Env) -> Address { get_asset(e) }
 
     pub fn current_apy(e: &Env) -> u32 {
-        let epoch = get_current_epoch(e);
         let ta = total_assets(e);
-        if epoch == 0 || ta == 0 {
+        let activation_ts = get_activation_timestamp(e);
+        if activation_ts == 0 || ta == 0 {
+            return get_expected_apy(e);
+        }
+        let now = e.ledger().timestamp();
+        let elapsed = now.saturating_sub(activation_ts);
+        if elapsed == 0 {
             return get_expected_apy(e);
         }
         let ytd = get_total_yield_distributed(e);
-        ((ytd * 10000) / ta) as u32
+        if ytd == 0 {
+            return get_expected_apy(e);
+        }
+        const SECONDS_PER_YEAR: u64 = 31_536_000;
+        let numerator = (ytd as i128)
+            .checked_mul(SECONDS_PER_YEAR as i128)
+            .and_then(|v| v.checked_mul(10000))
+            .unwrap_or(i128::MAX);
+        let denominator = (ta as i128)
+            .checked_mul(elapsed as i128)
+            .unwrap_or(i128::MAX);
+        if denominator == 0 || denominator == i128::MAX {
+            return get_expected_apy(e);
+        }
+        let apy = numerator / denominator;
+        if apy > u32::MAX as i128 {
+            u32::MAX
+        } else {
+            apy as u32
+        }
     }
 
     pub fn expected_apy(e: &Env) -> u32 { get_expected_apy(e) }
@@ -687,6 +743,8 @@ impl SingleRWAVault {
 
     pub fn transfer(e: &Env, from: Address, to: Address, amount: i128) {
         from.require_auth();
+        require_not_blacklisted(e, &from);
+        require_not_blacklisted(e, &to);
         update_user_snapshot(e, &from);
         update_user_snapshot(e, &to);
         spend_share_balance(e, &from, amount);
@@ -703,6 +761,9 @@ impl SingleRWAVault {
         amount: i128,
     ) {
         spender.require_auth();
+        require_not_blacklisted(e, &spender);
+        require_not_blacklisted(e, &from);
+        require_not_blacklisted(e, &to);
         update_user_snapshot(e, &from);
         update_user_snapshot(e, &to);
         let allowance = get_share_allowance(e, &from, &spender);
@@ -902,5 +963,139 @@ fn require_active_or_funding(e: &Env) {
     let state = get_vault_state(e);
     if state != VaultState::Funding && state != VaultState::Active {
         panic_with_error!(e, Error::InvalidVaultState);
+    }
+}
+
+fn require_not_blacklisted(e: &Env, addr: &Address) {
+    if get_blacklisted(e, addr) {
+        panic_with_error!(e, Error::AddressBlacklisted);
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use soroban_sdk::testutils::Address as _;
+
+    fn create_test_token(e: &Env) -> Address {
+        e.register_stellar_asset_contract_v2(Address::generate(e)).address()
+    }
+
+    fn create_vault(e: &Env) -> (Address, Address, Address) {
+        let admin = Address::generate(e);
+        let asset = create_test_token(e);
+
+        let params = InitParams {
+            asset: asset.clone(),
+            share_name: String::from_str(e, "Vault Share"),
+            share_symbol: String::from_str(e, "vSHARE"),
+            share_decimals: 7,
+            admin: admin.clone(),
+            zkme_verifier: e.current_contract_address(),
+            cooperator: admin.clone(),
+            funding_target: 1000_0000000,
+            maturity_date: 0,
+            min_deposit: 1_0000000,
+            max_deposit_per_user: 0,
+            early_redemption_fee_bps: 100,
+            rwa_name: String::from_str(e, "Test RWA"),
+            rwa_symbol: String::from_str(e, "TRWA"),
+            rwa_document_uri: String::from_str(e, "https://example.com/doc"),
+            rwa_category: String::from_str(e, "Bonds"),
+            expected_apy: 500,
+        };
+
+        let vault_addr = e.register(SingleRWAVault, (params,));
+        (vault_addr, admin, asset)
+    }
+
+    #[test]
+    fn test_set_blacklisted_by_admin() {
+        let e = Env::default();
+        e.mock_all_auths();
+        let (vault_addr, admin, _asset) = create_vault(&e);
+        let client = SingleRWAVaultClient::new(&e, &vault_addr);
+
+        let user = Address::generate(&e);
+
+        assert_eq!(client.is_blacklisted(&user), false);
+
+        client.set_blacklisted(&admin, &user, &true);
+        assert_eq!(client.is_blacklisted(&user), true);
+
+        client.set_blacklisted(&admin, &user, &false);
+        assert_eq!(client.is_blacklisted(&user), false);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #4)")]
+    fn test_set_blacklisted_non_admin_fails() {
+        let e = Env::default();
+        e.mock_all_auths();
+        let (vault_addr, _admin, _asset) = create_vault(&e);
+        let client = SingleRWAVaultClient::new(&e, &vault_addr);
+
+        let non_admin = Address::generate(&e);
+        let user = Address::generate(&e);
+
+        client.set_blacklisted(&non_admin, &user, &true);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #14)")]
+    fn test_blacklisted_cannot_transfer() {
+        let e = Env::default();
+        e.mock_all_auths();
+        let (vault_addr, admin, asset) = create_vault(&e);
+        let client = SingleRWAVaultClient::new(&e, &vault_addr);
+        let token_client = token::Client::new(&e, &asset);
+        let token_admin = token::StellarAssetClient::new(&e, &asset);
+
+        let depositor = Address::generate(&e);
+        let recipient = Address::generate(&e);
+
+        token_admin.mint(&depositor, &100_0000000);
+        client.deposit(&depositor, &10_0000000, &depositor);
+
+        client.set_blacklisted(&admin, &depositor, &true);
+
+        client.transfer(&depositor, &recipient, &5_0000000);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #14)")]
+    fn test_cannot_transfer_to_blacklisted() {
+        let e = Env::default();
+        e.mock_all_auths();
+        let (vault_addr, admin, asset) = create_vault(&e);
+        let client = SingleRWAVaultClient::new(&e, &vault_addr);
+        let token_admin = token::StellarAssetClient::new(&e, &asset);
+
+        let depositor = Address::generate(&e);
+        let blacklisted_recipient = Address::generate(&e);
+
+        token_admin.mint(&depositor, &100_0000000);
+        client.deposit(&depositor, &10_0000000, &depositor);
+
+        client.set_blacklisted(&admin, &blacklisted_recipient, &true);
+
+        client.transfer(&depositor, &blacklisted_recipient, &5_0000000);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #14)")]
+    fn test_blacklisted_cannot_deposit() {
+        let e = Env::default();
+        e.mock_all_auths();
+        let (vault_addr, admin, asset) = create_vault(&e);
+        let client = SingleRWAVaultClient::new(&e, &vault_addr);
+        let token_admin = token::StellarAssetClient::new(&e, &asset);
+
+        let depositor = Address::generate(&e);
+        token_admin.mint(&depositor, &100_0000000);
+
+        client.set_blacklisted(&admin, &depositor, &true);
+
+        client.deposit(&depositor, &10_0000000, &depositor);
     }
 }
