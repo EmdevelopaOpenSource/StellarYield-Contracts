@@ -1486,6 +1486,8 @@ mod test_constructor;
 mod test_withdraw;
 #[cfg(test)]
 mod test_redemption;
+#[cfg(test)]
+mod test_access_control;
 
 #[cfg(test)]
 mod test_vault_state_guards;
