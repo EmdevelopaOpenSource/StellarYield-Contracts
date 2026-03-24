@@ -401,7 +401,8 @@ fn test_remove_vault_emits_event() {
     let (contract, topics, _data) = last;
     assert_eq!(contract, factory_id);
     // Verify the first topic is the "v_remove" symbol
-    let first_topic: soroban_sdk::Symbol = topics.get(0).unwrap().into_val(&e);
+    let first_topic = topics.get_unchecked(0);
+    let first_symbol: soroban_sdk::Symbol = first_topic.into_val(&e);
     let expected = soroban_sdk::symbol_short!("v_remove");
-    assert_eq!(first_topic, expected);
+    assert_eq!(first_symbol, expected);
 }
