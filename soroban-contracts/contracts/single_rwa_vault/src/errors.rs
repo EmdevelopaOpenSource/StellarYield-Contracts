@@ -43,4 +43,6 @@ pub enum Error {
     NotSupported = 25,
     /// Invalid initialization parameters provided to the constructor.
     InvalidInitParams = 26,
+    /// Vault cannot be closed because it still contains shares/assets.
+    VaultNotEmpty = 27,
 }

@@ -75,7 +75,7 @@ Each vault is an independent contract with its own share token, yield ledger, an
 ## Vault lifecycle
 
 ```
-Funding ──▶ Active ──▶ Matured
+Funding ──▶ Active ──▶ Matured ──▶ Closed
 ```
 
 | State | Description |
@@ -83,6 +83,7 @@ Funding ──▶ Active ──▶ Matured
 | `Funding` | Accepting deposits until the funding target is reached |
 | `Active` | RWA investment is live; operators distribute yield per epoch |
 | `Matured` | Maturity date reached; users redeem principal + yield |
+| `Closed` | Terminal state; all shares redeemed and vault wound down |
 
 ---
 

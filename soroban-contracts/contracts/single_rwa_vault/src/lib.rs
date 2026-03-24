@@ -488,6 +488,7 @@ impl SingleRWAVault {
         // --- Checks ---
         acquire_lock(e);
         require_not_paused(e);
+        require_not_closed(e);
         require_not_blacklisted(e, &caller);
 
         let amount = Self::pending_yield(e, caller.clone());
@@ -524,6 +525,7 @@ impl SingleRWAVault {
         // --- Checks ---
         acquire_lock(e);
         require_not_paused(e);
+        require_not_closed(e);
         require_not_blacklisted(e, &caller);
 
         if get_has_claimed_epoch(e, &caller, epoch) {
@@ -689,10 +691,29 @@ impl SingleRWAVault {
         emit_vault_state_changed(e, VaultState::Active, VaultState::Matured);
         bump_instance(e);
     }
+    
+    /// Transition Matured → Closed.
+    ///
+    /// Requires that all shares have been redeemed (total_supply == 0).
+    /// Closed is a terminal state; no further operations are possible.
+    pub fn close_vault(e: &Env, caller: Address) {
+        caller.require_auth();
+        require_operator(e, &caller);
+        require_state(e, VaultState::Matured);
+
+        if total_supply(e) > 0 {
+            panic_with_error!(e, Error::VaultNotEmpty);
+        }
+
+        put_vault_state(e, VaultState::Closed);
+        emit_vault_state_changed(e, VaultState::Matured, VaultState::Closed);
+        bump_instance(e);
+    }
 
     pub fn set_maturity_date(e: &Env, caller: Address, timestamp: u64) {
         caller.require_auth();
         require_operator(e, &caller);
+        require_not_closed(e);
         put_maturity_date(e, timestamp);
         emit_maturity_date_set(e, timestamp);
         bump_instance(e);
@@ -808,6 +829,7 @@ impl SingleRWAVault {
     pub fn request_early_redemption(e: &Env, caller: Address, shares: i128) -> u32 {
         caller.require_auth();
         require_not_paused(e);
+        require_not_closed(e);
         require_not_blacklisted(e, &caller);
 
         if shares <= 0 {
@@ -875,6 +897,7 @@ impl SingleRWAVault {
     pub fn set_early_redemption_fee(e: &Env, caller: Address, fee_bps: u32) {
         caller.require_auth();
         require_operator(e, &caller);
+        require_not_closed(e);
         if fee_bps > 1000 {
             panic_with_error!(e, Error::FeeTooHigh);
         }
@@ -1305,6 +1328,12 @@ fn require_state(e: &Env, expected: VaultState) {
     }
 }
 
+fn require_not_closed(e: &Env) {
+    if get_vault_state(e) == VaultState::Closed {
+        panic_with_error!(e, Error::InvalidVaultState);
+    }
+}
+
 fn require_active_or_funding(e: &Env) {
     let state = get_vault_state(e);
     if state != VaultState::Funding && state != VaultState::Active {
@@ -1512,5 +1541,7 @@ mod test_access_control;
 
 #[cfg(test)]
 mod test_constructor_validation;
+#[cfg(test)]
+mod test_close_vault;
 #[cfg(test)]
 mod test_token;
